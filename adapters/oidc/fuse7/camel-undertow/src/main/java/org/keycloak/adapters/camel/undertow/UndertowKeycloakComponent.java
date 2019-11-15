@@ -22,12 +22,15 @@ import java.net.URISyntaxException;
 import org.apache.camel.CamelContext;
 import org.apache.camel.component.undertow.UndertowComponent;
 import org.apache.camel.component.undertow.UndertowEndpoint;
+import org.keycloak.adapters.springboot.KeycloakSpringBootProperties;
 
-/**
+/**myKeycloakSpringBootConfigResolver
  *
  * @author hmlnarik
  */
 public class UndertowKeycloakComponent extends UndertowComponent {
+
+    private KeycloakSpringBootProperties properties;
 
     public UndertowKeycloakComponent() {
     }
@@ -38,11 +41,16 @@ public class UndertowKeycloakComponent extends UndertowComponent {
 
     @Override
     protected UndertowEndpoint createEndpointInstance(URI endpointUri, UndertowComponent component) throws URISyntaxException {
-        return new UndertowKeycloakEndpoint(endpointUri.toString(), component);
+        UndertowKeycloakEndpoint endpoint =  new UndertowKeycloakEndpoint(endpointUri.toString(), component, properties);
+        return endpoint;
     }
 
     @Override
     protected String getComponentName() {
         return "undertow-keycloak";
+    }
+
+    public void setProperties(KeycloakSpringBootProperties properties) {
+        this.properties = properties;
     }
 }

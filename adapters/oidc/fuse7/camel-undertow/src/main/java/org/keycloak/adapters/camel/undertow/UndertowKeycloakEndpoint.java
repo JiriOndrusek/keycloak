@@ -22,10 +22,13 @@ import org.keycloak.adapters.AdapterDeploymentContext;
 import org.keycloak.adapters.KeycloakConfigResolver;
 import org.keycloak.adapters.KeycloakDeployment;
 import org.keycloak.adapters.KeycloakDeploymentBuilder;
+import org.keycloak.adapters.springboot.KeycloakSpringBootProperties;
 import org.keycloak.representations.adapters.config.AdapterConfig;
 import io.undertow.server.HttpServerExchange;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashSet;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -51,12 +54,16 @@ public class UndertowKeycloakEndpoint extends UndertowEndpoint {
 
     private String skipPattern;
 
-    private List<String> allowedRoles = Collections.emptyList();
+    private List<String> allowedRoles = Collections.singletonList("Member");
 
     private int confidentialPort = 8443;
 
-    public UndertowKeycloakEndpoint(String uri, UndertowComponent component) {
+    private KeycloakSpringBootProperties properties;
+
+    public UndertowKeycloakEndpoint(String uri, UndertowComponent component, KeycloakSpringBootProperties properties) {
         super(uri, component);
+        this.configResolver = new UndertowKeycloakSpringBootConfigResolver(properties);
+        this.properties = properties;
     }
 
     public AdapterConfig getAdapterConfig() {
@@ -100,17 +107,27 @@ public class UndertowKeycloakEndpoint extends UndertowEndpoint {
         return configResolver;
     }
 
-    public void setConfigResolver(KeycloakConfigResolver configResolver) {
-        this.configResolver = configResolver;
-    }
-
     @Override
     public Consumer createConsumer(Processor processor) throws Exception {
         return new UndertowKeycloakConsumer(this, processor, getDeploymentContext(), getSkipPatternAsPattern(), computeAllowedRoles(), this.confidentialPort);
     }
 
     public List<String> computeAllowedRoles() {
-        List<String> res = this.allowedRoles == null ? Collections.<String>emptyList() : this.allowedRoles;
+        List<String> res;
+
+        if(properties == null
+                || properties.getSecurityConstraints() == null
+                || properties.getSecurityConstraints().isEmpty()){
+            res = Collections.<String>emptyList();
+        } else {
+            LinkedHashSet lhs = new LinkedHashSet<>();
+            for (KeycloakSpringBootProperties.SecurityConstraint c: properties.getSecurityConstraints()         ) {
+                lhs.addAll(c.getAuthRoles());
+                //todo just allowed
+            }
+            res = new LinkedList<>(lhs);
+        }
+
         if (res.isEmpty()) {
             LOG.warning("No roles were configured, Keycloak will deny every request");
         }

@@ -17,6 +17,12 @@
 
 package org.keycloak.adapters.camel.undertow;
 
+import io.undertow.server.session.SessionConfig;
+import io.undertow.server.session.SessionCookieConfig;
+import io.undertow.servlet.Servlets;
+import io.undertow.servlet.api.ServletContainer;
+import io.undertow.servlet.handlers.ServletRequestContext;
+import io.undertow.servlet.spec.SessionCookieConfigImpl;
 import org.keycloak.KeycloakPrincipal;
 import org.keycloak.adapters.AdapterDeploymentContext;
 import org.keycloak.adapters.AdapterTokenStore;
@@ -30,6 +36,7 @@ import org.keycloak.adapters.spi.AuthOutcome;
 import org.keycloak.adapters.spi.HttpFacade;
 import org.keycloak.adapters.spi.InMemorySessionIdMapper;
 import org.keycloak.adapters.spi.SessionIdMapper;
+import org.keycloak.adapters.spi.UserSessionManagement;
 import org.keycloak.adapters.undertow.KeycloakUndertowAccount;
 import org.keycloak.adapters.undertow.OIDCUndertowHttpFacade;
 import org.keycloak.adapters.undertow.SessionManagementBridge;
@@ -49,7 +56,9 @@ import io.undertow.server.session.SessionManager;
 import io.undertow.util.AttachmentKey;
 import io.undertow.util.StatusCodes;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.logging.Level;
@@ -67,6 +76,8 @@ public class UndertowKeycloakConsumer extends UndertowConsumer {
     private static final Logger LOG = Logger.getLogger(UndertowKeycloakConsumer.class.getName());
 
     public static final AttachmentKey<KeycloakPrincipal> KEYCLOAK_PRINCIPAL_KEY = AttachmentKey.create(KeycloakPrincipal.class);
+
+    static String id;
 
     private static final IdentityManager IDENTITY_MANAGER = new IdentityManager() {
         @Override
@@ -142,6 +153,9 @@ public class UndertowKeycloakConsumer extends UndertowConsumer {
         PreAuthActionsHandler preAuth = new PreAuthActionsHandler(bridge, deploymentContext, facade);
         if (preAuth.handleRequest()) return;
 
+        httpExchange.putAttachment(SessionManager.ATTACHMENT_KEY, sessionManager);
+        httpExchange.putAttachment(SessionConfig.ATTACHMENT_KEY, new SessionCookieConfig());
+
         SecurityContext securityContext = httpExchange.getSecurityContext();
         if (securityContext == null) {
             securityContext = new SecurityContextImpl(httpExchange, IDENTITY_MANAGER);
@@ -215,5 +229,6 @@ public class UndertowKeycloakConsumer extends UndertowConsumer {
     private boolean shouldSkip(String requestPath) {
         return skipPattern != null && skipPattern.matcher(requestPath).matches();
     }
+
 
 }
