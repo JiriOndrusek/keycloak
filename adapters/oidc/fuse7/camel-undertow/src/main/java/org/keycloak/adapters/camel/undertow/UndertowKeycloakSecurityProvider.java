@@ -19,7 +19,6 @@ package org.keycloak.adapters.camel.undertow;
 
 import java.util.*;
 import java.util.function.BiConsumer;
-import java.util.function.Consumer;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.regex.Pattern;
@@ -34,15 +33,8 @@ import io.undertow.server.session.InMemorySessionManager;
 import io.undertow.server.session.SessionManager;
 import io.undertow.util.AttachmentKey;
 import io.undertow.util.StatusCodes;
-import org.apache.camel.CamelContext;
-import org.apache.camel.Endpoint;
-import org.apache.camel.Exchange;
-import org.apache.camel.component.undertow.RequestHandler;
 import org.apache.camel.component.undertow.UndertowConsumer;
 import org.apache.camel.component.undertow.spi.UndertowSecurityProvider;
-import org.apache.camel.spi.Metadata;
-import org.apache.camel.spi.annotations.Component;
-import org.apache.camel.support.DefaultComponent;
 import org.keycloak.KeycloakPrincipal;
 import org.keycloak.adapters.*;
 import org.keycloak.adapters.spi.*;
@@ -54,10 +46,8 @@ import org.keycloak.representations.adapters.config.AdapterConfig;
  *
  * @author hmlnarik
  */
-@Metadata(label = "verifiers", enums = "parameters,connectivity")
-@Component("undertow-keycloak")
-public class UndertowKeycloakComponent implements UndertowSecurityProvider {
-    private static final Logger LOG = Logger.getLogger(UndertowKeycloakComponent.class.getName());
+public class UndertowKeycloakSecurityProvider implements UndertowSecurityProvider {
+    private static final Logger LOG = Logger.getLogger(UndertowKeycloakSecurityProvider.class.getName());
 
     public static final AttachmentKey<KeycloakPrincipal> KEYCLOAK_PRINCIPAL_KEY = AttachmentKey.create(KeycloakPrincipal.class);
 
@@ -83,29 +73,17 @@ public class UndertowKeycloakComponent implements UndertowSecurityProvider {
 
     private SessionManager sessionManager;
 
-    private List<String> allowedRoles;
-
-    private int confidentialPort = 8443;
-
-    private String skipPattern;
-
-    private KeycloakConfigResolver configResolver;
+    private UndertowKeycloakSecurityConfiguration configuration;
 
     private AdapterConfig adapterConfig;
 
-
-    protected SessionIdMapper idMapper = new InMemorySessionIdMapper();
-
-    protected final NodesRegistrationManagement nodesRegistrationManagement = new NodesRegistrationManagement();
-
     private final UndertowUserSessionManagement userSessionManagement = new UndertowUserSessionManagement();
 
-
-    public UndertowKeycloakComponent() {
+    public UndertowKeycloakSecurityProvider() {
     }
 
     @Override
-    public void addPropertiesIntoExchange(BiConsumer<String, Object> consumer, HttpServerExchange httpExchange) {
+    public void addHeader(BiConsumer<String, Object> consumer, HttpServerExchange httpExchange) {
         KeycloakPrincipal principal = httpExchange.getAttachment(KEYCLOAK_PRINCIPAL_KEY);
         LOG.log(Level.FINE, "principal: {0}", principal);
         if (principal != null) {
@@ -113,15 +91,11 @@ public class UndertowKeycloakComponent implements UndertowSecurityProvider {
         }
     }
 
-    @Override
-    public boolean handleAuthentication(HttpServerExchange httpExchange) throws Exception {
-        if (shouldSkip(httpExchange.getRequestPath())) {
-            return true;
-        }
 
-        //perform only non-blocking operation on exchange
-        if (httpExchange.isInIoThread()) {
-            return true;
+    @Override
+    public int authenticate(HttpServerExchange httpExchange, List<String> allowedRoles) throws Exception {
+        if (shouldSkip(httpExchange.getRequestPath())) {
+            return StatusCodes.OK;
         }
 
         OIDCUndertowHttpFacade facade = new OIDCUndertowHttpFacade(httpExchange);
@@ -130,13 +104,13 @@ public class UndertowKeycloakComponent implements UndertowSecurityProvider {
         if (deployment == null || !deployment.isConfigured()) {
             httpExchange.setStatusCode(StatusCodes.FORBIDDEN);
             LOG.fine("deployment not configured");
-            return false;
+            return StatusCodes.FORBIDDEN;
         }
 
         LOG.fine("executing PreAuthActionsHandler");
         SessionManagementBridge bridge = new SessionManagementBridge(userSessionManagement, sessionManager);
         PreAuthActionsHandler preAuth = new PreAuthActionsHandler(bridge, deploymentContext, facade);
-        if (preAuth.handleRequest()) return true;
+        if (preAuth.handleRequest()) return StatusCodes.OK;
 
         SecurityContext securityContext = httpExchange.getSecurityContext();
         if (securityContext == null) {
@@ -146,17 +120,17 @@ public class UndertowKeycloakComponent implements UndertowSecurityProvider {
         tokenStore.checkCurrentToken();
 
         LOG.fine("executing AuthenticatedActionsHandler");
-        RequestAuthenticator authenticator = new UndertowRequestAuthenticator(facade, deployment, confidentialPort, securityContext, httpExchange, tokenStore);
+        RequestAuthenticator authenticator = new UndertowRequestAuthenticator(facade, deployment, this.configuration.getConfidentialPort(), securityContext, httpExchange, tokenStore);
         AuthOutcome outcome = authenticator.authenticate();
 
         if (outcome == AuthOutcome.AUTHENTICATED) {
             LOG.fine("AUTHENTICATED");
             if (httpExchange.isResponseComplete()) {
-                return false;
+                return StatusCodes.OK;
             }
             AuthenticatedActionsHandler actions = new AuthenticatedActionsHandler(deployment, facade);
             if (actions.handledRequest()) {
-                return false;
+                return StatusCodes.OK;
             } else {
                 final Account authenticatedAccount = securityContext.getAuthenticatedAccount();
                 if (authenticatedAccount instanceof KeycloakUndertowAccount) {
@@ -170,13 +144,13 @@ public class UndertowKeycloakComponent implements UndertowSecurityProvider {
 
                 LOG.log(Level.FINE, "Allowed roles: {0}, current roles: {1}", new Object[] {allowedRoles, roles});
 
-                if (isRoleAllowed(roles, httpExchange)) {
-                    return true;
+                if (isRoleAllowed(roles, allowedRoles)) {
+                    return StatusCodes.OK;
                 } else {
-                    httpExchange.setStatusCode(StatusCodes.FORBIDDEN);
+                    return StatusCodes.FORBIDDEN;
                 }
 
-                return false;
+
             }
         }
 
@@ -184,27 +158,25 @@ public class UndertowKeycloakComponent implements UndertowSecurityProvider {
         if (challenge != null) {
             LOG.fine("challenge");
             challenge.challenge(facade);
-            return false;
+            return challenge.getResponseCode();
         }
 
-        httpExchange.setStatusCode(StatusCodes.FORBIDDEN);
-        return false;
+        return StatusCodes.FORBIDDEN;
     }
 
     @Override
-    public boolean acceptConfiguration(Object configuration, List<String> allowedRoles, String endpointUri) throws Exception {
-        if(configuration instanceof KeycloakConfigResolver) {
-            this.configResolver = (KeycloakConfigResolver)configuration;
+    public boolean acceptConfiguration(Object configuration, String endpointUri) throws Exception {
+        if(configuration instanceof UndertowKeycloakSecurityConfiguration) {
+            this.configuration = (UndertowKeycloakSecurityConfiguration)configuration;
             this.sessionManager = new InMemorySessionManager(endpointUri);
             this.deploymentContext = getDeploymentContext();
-            this.allowedRoles = computeAllowedRoles(allowedRoles);
             return true;
         }
 
         return false;
     }
 
-    public boolean isRoleAllowed(Set<String> roles, HttpServerExchange httpExchange) throws Exception {
+    public boolean isRoleAllowed(Set<String> roles, List<String> allowedRoles) throws Exception {
         for (String role : allowedRoles) {
             if (roles.contains(role)) {
                 return true;
@@ -212,10 +184,6 @@ public class UndertowKeycloakComponent implements UndertowSecurityProvider {
         }
 
         return false;
-    }
-
-    public int getConfidentialPort() {
-        return confidentialPort;
     }
 
     protected AdapterTokenStore getTokenStore(HttpServerExchange exchange, HttpFacade facade, KeycloakDeployment deployment, SecurityContext securityContext) {
@@ -228,13 +196,13 @@ public class UndertowKeycloakComponent implements UndertowSecurityProvider {
 
     private boolean shouldSkip(String requestPath) {
         //todo cache pattern
-        return skipPattern != null && getSkipPatternAsPattern().matcher(requestPath).matches();
+        return this.configuration.getSkipPattern() != null && getSkipPatternAsPattern().matcher(requestPath).matches();
     }
 
     private AdapterDeploymentContext getDeploymentContext() {
-        if (configResolver != null) {
-            LOG.log(Level.INFO, "Using {0} to resolve Keycloak configuration on a per-request basis.", configResolver.getClass());
-            return new AdapterDeploymentContext(configResolver);
+        if (this.configuration != null) {
+            LOG.log(Level.INFO, "Using {0} to resolve Keycloak configuration on a per-request basis.", this.configuration.getClass());
+            return new AdapterDeploymentContext(this.configuration);
         } else if (adapterConfig != null) {
             KeycloakDeployment kd = KeycloakDeploymentBuilder.build(adapterConfig);
             return new AdapterDeploymentContext(kd);
@@ -245,9 +213,9 @@ public class UndertowKeycloakComponent implements UndertowSecurityProvider {
     }
 
     private Pattern getSkipPatternAsPattern() {
-        return skipPattern == null
+        return this.configuration.getSkipPattern() == null
                 ? null
-                : Pattern.compile(skipPattern, Pattern.DOTALL);
+                : Pattern.compile(this.configuration.getSkipPattern(), Pattern.DOTALL);
     }
 
     public List<String> computeAllowedRoles(List<String> allowedRoles) {
@@ -259,9 +227,6 @@ public class UndertowKeycloakComponent implements UndertowSecurityProvider {
         return res;
     }
 
-    public void setConfidentialPort(int confidentialPort) {
-        this.confidentialPort = confidentialPort;
-    }
 
     public AdapterConfig getAdapterConfig() {
         return adapterConfig;
